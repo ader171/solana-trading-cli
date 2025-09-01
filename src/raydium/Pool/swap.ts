@@ -57,6 +57,7 @@ let sdkCache = { sdk: null, expiry: 0 };
  * @param {string} input.ataOut - The associated token account for the output token.
  * @param {string} input.usage - The usage type of the transaction (e.g., "volume").
  * @param {string} input.side - The side of the swap transaction (e.g., "buy").
+ * @param {object} [input.blockhashOverride] - Optional blockhash to use ({ blockhash, lastValidBlockHeight }).
  * @returns {Object} - The transaction ID if successful, otherwise null.
  */
 async function swapOnlyAmm(input: any) {
@@ -101,10 +102,15 @@ async function swapOnlyAmm(input: any) {
     poolKeys.version
   );
   if (input.usage == "volume") return innerTransaction;
-  let latestBlockhash = await connection.getLatestBlockhash();
-  const messageV0 = new TransactionMessage({
+
+  // Build once for simulation (using override if provided), then rebuild per attempt below for sending
+  let initialBlockhash = input.blockhashOverride
+    ? input.blockhashOverride
+    : await connection.getLatestBlockhash();
+
+  const simMessageV0 = new TransactionMessage({
     payerKey: wallet.publicKey,
-    recentBlockhash: latestBlockhash.blockhash,
+    recentBlockhash: initialBlockhash.blockhash,
     instructions: [
       ...[
         ComputeBudgetProgram.setComputeUnitLimit({
@@ -125,26 +131,61 @@ async function swapOnlyAmm(input: any) {
     ],
   }).compileToV0Message();
 
-  const transaction = new VersionedTransaction(messageV0);
-  transaction.sign([wallet, ...innerTransaction.signers]);
-  const rpcResponse = await connection.simulateTransaction(transaction, {
+  const simTransaction = new VersionedTransaction(simMessageV0);
+  simTransaction.sign([wallet, ...innerTransaction.signers]);
+
+  const rpcResponse = await connection.simulateTransaction(simTransaction, {
     replaceRecentBlockhash: true,
     sigVerify: false,
-});
+  });
 
-  const logs:any = rpcResponse.value.logs;
-  for(let i = 0; i < logs.length; i++) {
-    if(logs[i].includes('Program log: Error: InvalidSplTokenProgram')) {
-      logger.error('Please go some WSOLs to the wallet before swapping')
-      logger.error('You can run the command: ts-node src/helpers/wrap_sol.ts --size <size>')
+  const logs: any = rpcResponse.value.logs || [];
+  for (let i = 0; i < logs.length; i++) {
+    if (logs[i].includes("Program log: Error: InvalidSplTokenProgram")) {
+      logger.error("Please go some WSOLs to the wallet before swapping");
+      logger.error("You can run the command: ts-node src/helpers/wrap_sol.ts --size <size>");
       return;
     }
   }
+
   let attempts = 0;
   const maxAttempts = 3;
 
   while (attempts < maxAttempts) {
     attempts++;
+
+    // Always use the override if provided; otherwise refresh latest on every attempt
+    const latestBlockhash = input.blockhashOverride
+      ? input.blockhashOverride
+      : await connection.getLatestBlockhash();
+
+    // Rebuild and re-sign the transaction for this attempt with the fresh blockhash
+    const messageV0 = new TransactionMessage({
+      payerKey: wallet.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions: [
+        ...[
+          ComputeBudgetProgram.setComputeUnitLimit({
+            units: 70000,
+          }),
+        ],
+        ...(input.side === "buy"
+          ? [
+              createAssociatedTokenAccountIdempotentInstruction(
+                wallet.publicKey,
+                input.ataOut,
+                wallet.publicKey,
+                input.outputToken.mint
+              ),
+            ]
+          : []),
+        ...innerTransaction.instructions,
+      ],
+    }).compileToV0Message();
+
+    const transaction = new VersionedTransaction(messageV0);
+    transaction.sign([wallet, ...innerTransaction.signers]);
+
     try {
       const res = await jito_executeAndConfirm(
         transaction,
@@ -167,12 +208,13 @@ async function swapOnlyAmm(input: any) {
         return { txid: e.signature };
       }
     }
-    latestBlockhash = await connection.getLatestBlockhash();
+    // loop continues; if override provided, it will be reused; otherwise a new blockhash will be fetched next iteration
   }
 
   console.log("Transaction failed after maximum retry attempts");
   return { txid: null };
 }
+
 async function swapOnlyAmmUsingBloXRoute(input: any) {
   let raydium: any = null;
   if (sdkCache.sdk) {
@@ -233,6 +275,7 @@ async function swapOnlyAmmUsingBloXRoute(input: any) {
   );
   await bloXroute_executeAndConfirm(tx, [wallet]);
 }
+
 /**
  * Swaps tokens for a specified volume.
  * @param {string} tokenAddr - The address of the token to swap.
@@ -317,7 +360,9 @@ async function swapOnlyAmmHelper(input: any) {
   } else {
     console.log("Transaction failed");
   }
+  return res; // <-- ensure caller receives { txid }
 }
+
 /**
  * Performs a swap operation.
  *
@@ -334,7 +379,8 @@ export async function swap(
   buy_AmountOfSol: number,
   sell_PercentageOfToken: number,
   payer_wallet: Keypair,
-  usage: string
+  usage: string,
+  blockhashOverride?: { blockhash: string; lastValidBlockHeight: number }
 ) {
   const tokenAddress = tokenAddr;
   const tokenAccount = new PublicKey(tokenAddress);
@@ -384,11 +430,12 @@ export async function swap(
       ataOut: mintAta,
       side,
       usage,
+      blockhashOverride, // pass this into the internal swap call
     };
     if (usage == "volume") {
       return await swapOnlyAmm(input);
     }
-    swapOnlyAmmHelper(input); // using jito
+    return await swapOnlyAmmHelper(input); // using jito and return result
     //swapOnlyAmmUsingBloXRoute(input); // using bloXroute
   } else {
     // sell
@@ -439,11 +486,12 @@ export async function swap(
       side,
       usage,
       tokenAddress: tokenAddress,
+      blockhashOverride, // pass this into the internal swap call
     };
     if (usage == "volume") {
       return await swapOnlyAmm(input);
     }
-    swapOnlyAmmHelper(input); // using Jito
+    return await swapOnlyAmmHelper(input); // using Jito and return result
     //swapOnlyAmmUsingBloXRoute(input); // using bloXroute
   }
 }
