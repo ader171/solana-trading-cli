@@ -13,22 +13,29 @@ import fs from "fs";
 import dotenv from "dotenv";
 import bs58 from "bs58";
 import path from "path";
-// default path: /Users/{your_user_name}/Desktop/solana-trading-cli/src/helpers/.env
-// please specify your own .env path
-const envPath = path.join(__dirname, ".env");
 
-// Check if .env file exists before trying to load it
-if (!fs.existsSync(envPath)) {
-    throw new Error(`Please specify your private key and rpc url in src/helpers/.env.example and rename it to .env.`);
+// === .env LOADING CHANGES START ===
+// Load .env from the project root (the directory you run the process from),
+// instead of forcing a .env inside this package's src/helpers folder.
+const ROOT_ENV_PATH = path.resolve(process.cwd(), ".env");
+
+// Hard fail if the root .env is missing (so issues are obvious)
+if (!fs.existsSync(ROOT_ENV_PATH)) {
+  throw new Error(
+    `Missing .env at ${ROOT_ENV_PATH}. Create one in your project root (not inside solana-trading-cli).\n` +
+      `Required vars: PRIVATE_KEY (base58), MAINNET_ENDPOINT, optionally JITO_FEE, BLOXROUTE_FEE, etc.`
+  );
 }
-dotenv.config({
-  path: envPath, // fill in your .env path
-});
+
+// Load environment variables from project root .env
+dotenv.config({ path: ROOT_ENV_PATH });
+// === .env LOADING CHANGES END ===
+
 export function loadKeypairFromFile(filename: string) {
   const secret = fs.readFileSync(filename, { encoding: "utf8" });
   return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(secret)));
 }
-export const jito_fee:any = process.env.JITO_FEE; // 0.00009 SOL
+export const jito_fee: any = process.env.JITO_FEE; // 0.00009 SOL
 export const shyft_api_key = process.env.SHYFT_API_KEY; // your shyft api key
 export const wallet = Keypair.fromSecretKey(
   bs58.decode(process.env.PRIVATE_KEY || "")
@@ -80,6 +87,5 @@ export const DEFAULT_TOKEN = {
     "USDC"
   ),
 };
-
 
 export const wsol = "So11111111111111111111111111111111111111112";
