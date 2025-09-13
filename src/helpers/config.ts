@@ -29,6 +29,18 @@ if (!fs.existsSync(ROOT_ENV_PATH)) {
 
 // Load environment variables from project root .env
 dotenv.config({ path: ROOT_ENV_PATH });
+
+// Log and validate MAINNET_ENDPOINT
+const RAW_MAINNET_ENDPOINT = (process.env.MAINNET_ENDPOINT || "").trim();
+console.log("[solana-trading-cli] .env path:", ROOT_ENV_PATH);
+console.log("[solana-trading-cli] MAINNET_ENDPOINT:", JSON.stringify(RAW_MAINNET_ENDPOINT));
+if (!/^https?:\/\//i.test(RAW_MAINNET_ENDPOINT)) {
+  throw new TypeError(
+    `MAINNET_ENDPOINT must start with http:// or https:// (got: ${JSON.stringify(RAW_MAINNET_ENDPOINT)})`
+  );
+}
+export const main_endpoint = RAW_MAINNET_ENDPOINT;
+
 // === .env LOADING CHANGES END ===
 
 export function loadKeypairFromFile(filename: string) {
